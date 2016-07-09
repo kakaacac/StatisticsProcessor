@@ -1,7 +1,5 @@
 # -*- coding: utf-8 -*-
 
-from psycopg2.extras import DictCursor
-
 from pg_cluster import PgCluster
 import config
 
@@ -29,6 +27,6 @@ class PostgresPool(object):
         try:
             if not self._connection or self._connection.closed:
                 self._connection = self._pool.getconn()
-            return self._connection.cursor(cursor_factory=DictCursor)
+            return self._connection.cursor()
         except Exception as e:
             raise
