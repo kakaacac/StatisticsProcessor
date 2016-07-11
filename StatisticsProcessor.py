@@ -61,27 +61,27 @@ class StatisticsProcessor(object):
                                       "body_size", "http_referrer", "user_agent", "forwarded"],
                                index_col=False)
 
-    def summarize_login(self, df=None):
-        login = df[df.request.str.startswith("POST /v1/passport/login").fillna(False)
-                   & (df.status==200)].loc[:, ['time', 'user']]
+    def _get_all_auth_data(self, log_files):
+        """
+        :return: two Dataframes containing all log records of registration and login, respectively
+        """
+        reg = pandas.DataFrame()
+        login = pandas.DataFrame()
 
-        login['date'] = pandas.to_datetime(login.time, format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date())
+        get_request_logs = lambda df, request: df[(df.request.str.startswith(request).fillna(False))
+                                                  & (df.status==200)].loc[:, ['time', 'user']]
 
-        if login.empty:
-            return pandas.Series(0,
-                                 index=pandas.to_datetime(df.time,
-                                                          format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date()).unique())
+        get_date = lambda df: pandas.to_datetime(df.time, format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date())
 
-        return login.groupby('date')['user'].nunique()
+        for log in log_files:
+            df = self._read_log_file(log)
+            login = pandas.concat([login, get_request_logs(df, "POST /v1/passport/login")])
+            reg = pandas.concat([reg, get_request_logs(df, "POST /v1/passport/reg_user")])
 
-    def summarize_registration(self, df=None):
-        login = df[df.request.str.startswith("POST /v1/passport/reg_user").fillna(False) & (df.status==200)]
+        login['date'] = get_date(login)
+        reg['date'] = get_date(reg)
 
-        s = pandas.to_datetime(login.time, format="[%d/%b/%Y:%H:%M:%S")
-
-        s = s.map(lambda t: t.date())
-
-        return s.value_counts().sort_index()
+        return reg, login
 
     def summarize_auth_data(self, log_constraint=True):
         """
@@ -89,16 +89,15 @@ class StatisticsProcessor(object):
         """
         log_files = [f for f in os.listdir(self.log_directory) if f.startswith(self.base_log_filename)]
 
-        reg = pandas.Series()
-        login = pandas.Series()
+        reg, login = self._get_all_auth_data(log_files)
 
-        for f in log_files:
-            df = self._read_log_file(f)
-            reg = reg.add(self.summarize_registration(df), fill_value=0)
-            login = login.add(self.summarize_login(df), fill_value=0)
+        reg = reg.groupby('date')['user'].nunique()
+        login = login.groupby('date')['user'].nunique()
 
-        data = pandas.concat([reg, login], axis=1).rename(columns={0:'reg', 1:'login'}).fillna(0)
+        data = pandas.concat([reg, login], axis=1).fillna(0)
         data.index = pandas.DatetimeIndex(data.index, tz=psycopg2.tz.FixedOffsetTimezone(offset=480, name=None))
+        data.columns = ['reg', 'login']
+
         self.start_date = data.index[1]
 
         return data.iloc[1:] if log_constraint else data
@@ -190,22 +189,10 @@ class StatisticsProcessor(object):
         """
         :return: [ num of registration, num of login ]
         """
-        reg_count = 0
-        login_count = 0
-        for log in self._get_corresponding_log_files():
-            df = self._read_log_file(log)
-            login = df[(df.request.str.startswith("POST /v1/passport/login").fillna(False))
-                       & (df.status==200)].loc[:, ['time', 'user']]
-            reg = df[(df.request.str.startswith("POST /v1/passport/reg_user").fillna(False))
-                     & (df.status==200)].loc[:, ['time', 'user']]
+        reg, login = self._get_all_auth_data(self._get_corresponding_log_files())
 
-            login['date'] = pandas.to_datetime(login.time, format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date())
-            reg['date'] = pandas.to_datetime(reg.time, format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date())
-
-            reg_count += len(reg[reg.date == self.processing_date].user.unique())
-            login_count += len(login[login.date == self.processing_date].user.unique())
-
-        return reg_count, login_count
+        return len(reg[reg.date == self.processing_date].user.unique()), \
+               len(login[login.date == self.processing_date].user.unique())
 
     def retrieve_recharging_data(self):
         """
