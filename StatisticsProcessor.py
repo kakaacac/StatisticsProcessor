@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import psycopg2
 import time
 import os
+import sys
 import gzip
 from datetime import datetime, timedelta
 import pandas
@@ -26,12 +28,14 @@ class StatisticsProcessor(object):
         self.current_hour = self.processing_time.replace(minute=0, second=0, microsecond=0)
         self.processing_date = self._get_processing_date()
 
-        self.connection = PostgresPool()
-        self.cur = self.connection.get_cursor()
+        self.pg_pool = PostgresPool()
+        self.cur = self.pg_pool.get_cursor()
 
         self.log_file = log_file
         self.log_directory = log_directory or config.LOG_DIRECTORY
         self.base_log_filename = config.BASE_LOG_FILENAME
+
+        self.start_date = None
 
     def _get_processing_date(self):
         """
@@ -50,7 +54,6 @@ class StatisticsProcessor(object):
         read the file into a pandas Dataframe and return it
         """
         fn = file_name or self.log_file
-        # return pandas.read_csv(fn,
         return pandas.read_csv(self._open_log_file(fn),
                                sep = ' ',
                                quotechar='"',
@@ -65,13 +68,14 @@ class StatisticsProcessor(object):
         login['date'] = pandas.to_datetime(login.time, format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date())
 
         if login.empty:
-            return pandas.Series(0, index=pandas.to_datetime(df.time, format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date()).unique())
+            return pandas.Series(0,
+                                 index=pandas.to_datetime(df.time,
+                                                          format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date()).unique())
 
         return login.groupby('date')['user'].nunique()
 
     def summarize_registration(self, df=None):
-        login = df[df.request.str.startswith("POST /v1/passport/reg_user").fillna(False)
-                   & (df.status==200)]
+        login = df[df.request.str.startswith("POST /v1/passport/reg_user").fillna(False) & (df.status==200)]
 
         s = pandas.to_datetime(login.time, format="[%d/%b/%Y:%H:%M:%S")
 
@@ -79,7 +83,10 @@ class StatisticsProcessor(object):
 
         return s.value_counts().sort_index()
 
-    def summarize_auth_data(self):
+    def summarize_auth_data(self, log_constraint=True):
+        """
+        :param log_constraint: if True, omit first row of data since it contains uncompleted daily stats
+        """
         log_files = [f for f in os.listdir(self.log_directory) if f.startswith(self.base_log_filename)]
 
         reg = pandas.Series()
@@ -91,28 +98,38 @@ class StatisticsProcessor(object):
             login = login.add(self.summarize_login(df), fill_value=0)
 
         data = pandas.concat([reg, login], axis=1).rename(columns={0:'reg', 1:'login'}).fillna(0)
-        data.index = data.index.tz_localize(psycopg2.tz.FixedOffsetTimezone(offset=480, name=None))
-        return data
+        data.index = pandas.DatetimeIndex(data.index, tz=psycopg2.tz.FixedOffsetTimezone(offset=480, name=None))
+        self.start_date = data.index[1]
+
+        return data.iloc[1:] if log_constraint else data
 
     def summarize_recharging_data(self):
-        self.cur.execute("SELECT COUNT(distinct uuid), COALESCE(SUM(money), 0), date_trunc('day', complete_time) AS d "
+        # num of user, total amount
+        self.cur.execute("SELECT COUNT(distinct uuid), COALESCE(SUM(money), 0), "
+                         "date_trunc('day', complete_time + INTERVAL '8 HOUR') AS d "
                          "FROM payment_history GROUP BY d ORDER BY d")
 
-        return pandas.DataFrame(self.cur.fetchall(), columns=["user", "amount", "date"]).set_index("date")
+        data = pandas.DataFrame(self.cur.fetchall(), columns=["user", "amount", "date"]).set_index("date")
+        data.index = data.index.tz_localize(psycopg2.tz.FixedOffsetTimezone(offset=480, name=None))
+
+        return data
 
     def _sql_to_df(self, query):
         self.cur.execute(query)
         return pandas.DataFrame(self.cur.fetchall()).rename(columns={0:'date'}).set_index('date')
 
     def summarize_compere_data(self):
+        # new_compere
         new_query = "SELECT d, COUNT(rid) FROM " \
                     "(SELECT date_trunc('day', MIN(start_time)) AS d, rid FROM live_histories GROUP BY rid) AS t " \
                     "GROUP BY d ORDER BY d"
         new = self._sql_to_df(new_query)
 
+        # active_compere
         active_query = "SELECT date_trunc('day', start_time) AS d, COUNT(DISTINCT rid) FROM live_histories GROUP BY d"
         active = self._sql_to_df(active_query)
 
+        # total_compere
         total_query = "SELECT d, COUNT(DISTINCT rid) FROM live_histories l INNER JOIN " \
                       "(SELECT DISTINCT date_trunc('day', start_time) d FROM live_histories) AS dates " \
                       "ON date_trunc('day', l.start_time) <= dates.d GROUP BY dates.d"
@@ -123,27 +140,33 @@ class StatisticsProcessor(object):
         return data
 
     def summarize_props_giving_data(self):
+        # recipient, presenter
         user_query = "SELECT date_trunc('day', send_time) d, COUNT(distinct compere_id), COUNT(distinct uuid) " \
                 "FROM income_log GROUP BY d"
         user = self._sql_to_df(user_query)
 
+        # vcy, vfc
         amount_query = "SELECT date_trunc('day', send_time) d, money_type t, SUM(t_price) FROM income_log " \
                        "GROUP BY d, t ORDER BY d, t"
-
-        # vcy, vfc
         self.cur.execute(amount_query)
         amount = pandas.DataFrame(self.cur.fetchall()).rename(columns={0:'date', 1:'type', 2:'amount'}).set_index(['date', 'type']).unstack(1)
         amount.columns = amount.columns.get_level_values(1)
 
         data = pandas.concat([user, amount], axis=1)
         data.columns = ['recipient', 'presenter'] + data.columns[2:].tolist()
+        data.index = data.index.tz_localize(psycopg2.tz.FixedOffsetTimezone(offset=480, name=None))
         return data
 
-    def summarize_data(self):
-        return self.summarize_compere_data() + \
-               self.summarize_props_giving_data() + \
-               self.summarize_auth_data() + \
-               self.summarize_recharging_data()
+    def summarize_data(self, log_constraint=True):
+        """
+        :param log_constraint: if True, return data after the date on which log file begins
+        """
+        result = pandas.concat([self.summarize_compere_data(),
+                                self.summarize_props_giving_data(),
+                                self.summarize_auth_data(),
+                                self.summarize_recharging_data()], axis=1).fillna(0)
+
+        return result.loc[self.start_date:] if log_constraint else result
 
     # TODO: raise error if no log file found
     def _get_corresponding_log_files(self):
@@ -236,6 +259,22 @@ class StatisticsProcessor(object):
                self.retrieve_auth_data() + \
                self.retrieve_recharging_data()
 
+    def summarize(self):
+        now = datetime.now()
+
+        values = ()
+        query = "INSERT INTO daily_statistics VALUES "
+        df = self.summarize_data()
+
+        query += ','.join(['(' + ','.join(['%s']*14) + ')']*len(df))
+
+        for index, data in df.iterrows():
+            id = index.value // 10**9
+            values += (id, now, index) + zip(*data.iteritems())[1]
+
+        self.cur.execute(query, values)
+        self.cur.connection.commit()
+
     def run(self, on_conflict=False):
         """
         :param on_conflict: if Ture, will update rows if conflict occurs
@@ -272,9 +311,26 @@ def timing(f):
 if __name__ == '__main__':
     sp = StatisticsProcessor()
 
-    # df = pandas.DataFrame(sp.summarize_recharging_data(), columns=["user", "amount", "date"]).set_index("date")
-    # print df
-
+    ### test ###
+    # print sp.summarize_props_giving_data()
+    # print sp.summarize_recharging_data()
     # print sp.summarize_compere_data()
-    # print sp.summarize_compere_data().index
-    print sp.summarize_auth_data().index
+    # print sp.summarize_auth_data()
+    # print sp.summarize_data()
+
+    # print sp.retrieve_props_giving_data()
+    # print sp.retrieve_recharging_data()
+    # print sp.retrieve_compere_data()
+    # print sp.retrieve_auth_data()
+    # print sp.retrieve_data()
+
+    if len(sys.argv) > 1:
+        if sys.argv[1] in ['summarize', 's']:
+            sp.summarize()
+            print "Finish"
+        else:
+            print "unrecognized command"
+    else:
+        sp.run(on_conflict=True)
+
+    pass
