@@ -37,3 +37,5 @@ nosetests.xml
 
 nginxlog/
 config.py
+
+verbose_data

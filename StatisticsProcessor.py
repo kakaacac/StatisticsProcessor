@@ -11,8 +11,10 @@ import pandas
 from functools import wraps
 
 from pg_pool import PostgresPool
+from logger import logger
 import config
 
+# TODO: make it more flexible for adding other stats in future (e.g. separate SQL and codes)
 class StatisticsProcessor(object):
     def __init__(self, log_file=None, log_directory=None, processing_time=None):
         now = datetime.now()
@@ -262,26 +264,28 @@ class StatisticsProcessor(object):
         self.cur.execute(query, values)
         self.cur.connection.commit()
 
-    def run(self, on_conflict=False):
+    def run(self):
         """
         :param on_conflict: if Ture, will update rows if conflict occurs
         """
-        ts = int(time.mktime(self.current_hour.timetuple()))
-        values = (ts, datetime.now(), self.processing_date) + self.retrieve_data()
+        ts = int(time.mktime(self.processing_date.timetuple()))
+        retrieved_values = self.retrieve_data()
+        values = (ts, datetime.now(), self.processing_date) + retrieved_values
         insert_str = ','.join(["%s"]*len(values)).join(['(', ')'])
         query = "INSERT INTO daily_statistics VALUES " + insert_str
 
-        if on_conflict:
-            conflict_str = " ON CONFLICT (id) DO UPDATE SET " \
-                           "(id, update_time, processing_date, new_compere, " \
-                           "active_compere, total_compere, recipient, " \
-                           "presenter, vcy_received, vfc_received, user_registered, " \
-                           "uesr_logined, user_recharged, recharged_amount) = " + insert_str
-            query += conflict_str
-            values = values*2
+        conflict_str = " ON CONFLICT (id) DO UPDATE SET " \
+                       "(id, update_time, processing_date, new_compere, " \
+                       "active_compere, total_compere, recipient, " \
+                       "presenter, vcy_received, vfc_received, user_registered, " \
+                       "uesr_logined, user_recharged, recharged_amount) = " + insert_str
+        query += conflict_str
+        values = values*2
 
         self.cur.execute(query, values)
         self.cur.connection.commit()
+
+        logger.info(' '.join([str(i) for i in retrieved_values]))
 
 
 def timing(f):
@@ -318,6 +322,6 @@ if __name__ == '__main__':
         else:
             print "unrecognized command"
     else:
-        sp.run(on_conflict=True)
+        sp.run()
 
     pass
