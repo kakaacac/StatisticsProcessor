@@ -27,7 +27,7 @@ class CompressingFileHandler(handlers.RotatingFileHandler):
 
     def doRollover(self):
         """
-        Do a rollover, as described in __init__().
+        Do a rollover.
         """
         if self.stream:
             self.stream.close()

@@ -212,11 +212,17 @@ class StatisticsProcessor(object):
         self.cur.execute("SELECT COUNT(distinct compere_id), COUNT(distinct uuid) FROM income_log "
                          "WHERE date_trunc('day', send_time) = %s", (self.processing_date,))
         result = self.cur.fetchone()
+        print result
 
-        # vcy, vfc
-        self.cur.execute("SELECT SUM(t_price) FROM income_log WHERE date_trunc('day', send_time) = %s "
-                         "GROUP BY money_type ORDER BY money_type", (self.processing_date,))
-        result += tuple(i[0] for i in self.cur.fetchall())
+        # vcy
+        self.cur.execute("SELECT COALESCE(SUM(t_price), 0) FROM income_log "
+                         "WHERE money_type='vcy' AND date_trunc('day', send_time) = %s", (self.processing_date,))
+        result += self.cur.fetchone()
+
+        # vfc
+        self.cur.execute("SELECT COALESCE(SUM(t_price), 0) FROM income_log "
+                         "WHERE money_type='vfc' AND date_trunc('day', send_time) = %s", (self.processing_date,))
+        result += self.cur.fetchone()
 
         return result
 
