@@ -212,7 +212,6 @@ class StatisticsProcessor(object):
         self.cur.execute("SELECT COUNT(distinct compere_id), COUNT(distinct uuid) FROM income_log "
                          "WHERE date_trunc('day', send_time) = %s", (self.processing_date,))
         result = self.cur.fetchone()
-        print result
 
         # vcy
         self.cur.execute("SELECT COALESCE(SUM(t_price), 0) FROM income_log "
