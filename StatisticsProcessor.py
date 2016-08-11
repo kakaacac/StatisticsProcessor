@@ -93,7 +93,7 @@ class StatisticsProcessor(object):
 
         reg, login = self._get_all_auth_data(log_files)
 
-        reg = reg.groupby('date')['user'].nunique()
+        reg = reg.groupby('date')['user'].count()
         login = login.groupby('date')['user'].nunique()
 
         data = pandas.concat([reg, login], axis=1).fillna(0)
@@ -193,7 +193,7 @@ class StatisticsProcessor(object):
         """
         reg, login = self._get_all_auth_data(self._get_corresponding_log_files())
 
-        return len(reg[reg.date == self.processing_date].user.unique()), \
+        return len(reg[reg.date == self.processing_date].user), \
                len(login[login.date == self.processing_date].user.unique())
 
     def retrieve_recharging_data(self):
