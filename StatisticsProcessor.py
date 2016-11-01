@@ -284,17 +284,17 @@ class StatisticsProcessor(object):
         result += (normal, paid)
 
         # number of interactive live show
-        self.cur.execute("SELECT COUNT(*) FROM live_histories WHERE start_time IN "
-                         "(SELECT start_time FROM live_histories lh INNER JOIN game_bonus_stats gs "
+        self.cur.execute("SELECT COUNT(*) FROM live_histories WHERE (start_time, rid) IN "
+                         "(SELECT start_time, rid FROM live_histories lh INNER JOIN game_bonus_stats gs "
                          "ON lh.rid = gs.room_id AND gs.game_start >= lh.start_time "
                          "AND gs.game_end <= lh.close_time WHERE date_trunc('day', start_time) = %s "
-                         "GROUP BY start_time)", (self.processing_date,))
+                         "GROUP BY start_time, rid)", (self.processing_date,))
         result += self.cur.fetchone()
 
         # number of cheating dice and Q&A
         self.cur.execute("SELECT game_id, COUNT(*) FROM game_bonus_stats WHERE date_trunc('day', game_start) = %s and game_id IS NOT NULL GROUP BY game_id", (self.processing_date,))
-        r = {}
-        r.update(reduce(lambda x, y: x.update({y[0]: y[1]}) or x, self.cur.fetchall(), {}))
+
+        r = reduce(lambda x, y: x.update({y[0]: y[1]}) or x, self.cur.fetchall(), {})
         result += (r.get(1, 0), r.get(2, 0))
 
         return result
