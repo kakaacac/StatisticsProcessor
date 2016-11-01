@@ -14,6 +14,7 @@ from pg_pool import PostgresPool
 from logger import logger
 import config
 
+# TODO: update summarizing functions for newly added data
 # TODO: make it more flexible for adding other stats in future (e.g. separate SQL and codes)
 class StatisticsProcessor(object):
     def __init__(self, log_file=None, log_directory=None, processing_time=None):
@@ -38,6 +39,9 @@ class StatisticsProcessor(object):
         self.base_log_filename = config.BASE_LOG_FILENAME
 
         self.start_date = None
+        self._df = None
+        self._logs = None
+        self.current_log = self._get_current_day_log()
 
     def _get_processing_date(self):
         """
@@ -63,25 +67,41 @@ class StatisticsProcessor(object):
                                       "body_size", "http_referrer", "user_agent", "forwarded"],
                                index_col=False)
 
+    def _get_df(self, log_files, request=None, regex=False):
+        if self._df is not None and self._logs == log_files:
+            temp_df = self._df
+        else:
+            temp_df = pandas.DataFrame()
+            for log in log_files:
+                temp_df = pandas.concat([temp_df, self._read_log_file(log)])
+
+            temp_df['time'] = pandas.to_datetime(temp_df['time'], format="[%d/%b/%Y:%H:%M:%S")
+            temp_df['date'] = temp_df['time'].map(lambda t: t.date())
+
+            self._df = temp_df
+            self._logs = log_files
+
+        if request:
+            if regex:
+                r = request if request.startswith("^") else "^{}".format(request)
+                regex_filter = lambda df, request: df[(df.request.str.contains(request).fillna(False))
+                                                      & (df.status==200)].loc[:, ['time', 'user', 'date']]
+                df = regex_filter(temp_df, r)
+            else:
+                str_filter = lambda df, request: df[(df.request.str.startswith(request).fillna(False))
+                                                    & (df.status==200)].loc[:, ['time', 'user', 'date']]
+                df = str_filter(temp_df, request)
+        else:
+            df = temp_df
+
+        return df
+
     def _get_all_auth_data(self, log_files):
         """
         :return: two Dataframes containing all log records of registration and login, respectively
         """
-        reg = pandas.DataFrame()
-        login = pandas.DataFrame()
-
-        get_request_logs = lambda df, request: df[(df.request.str.startswith(request).fillna(False))
-                                                  & (df.status==200)].loc[:, ['time', 'user']]
-
-        get_date = lambda df: pandas.to_datetime(df.time, format="[%d/%b/%Y:%H:%M:%S").map(lambda t: t.date())
-
-        for log in log_files:
-            df = self._read_log_file(log)
-            login = pandas.concat([login, get_request_logs(df, "POST /v1/passport/login")])
-            reg = pandas.concat([reg, get_request_logs(df, "POST /v1/passport/reg_user")])
-
-        login['date'] = get_date(login)
-        reg['date'] = get_date(reg)
+        reg = self._get_df(log_files, request="POST /v1/passport/reg_user")
+        login = self._get_df(log_files, request="POST /v1/passport/login")
 
         return reg, login
 
@@ -170,7 +190,7 @@ class StatisticsProcessor(object):
         return result.loc[self.start_date:] if log_constraint else result
 
     # TODO: raise error if no log file found
-    def _get_corresponding_log_files(self):
+    def _get_current_day_log(self):
         """
         :return: list of log files containing data of processing day
         """
@@ -187,13 +207,23 @@ class StatisticsProcessor(object):
         else:
             return [self.base_log_filename]
 
+    @staticmethod
+    def parse_auth(auth):
+        if "." in auth:
+            identity = auth.split(".")[1]
+        else:
+            identity = auth.rsplit("-", 1)[1]
+        return identity
+
     def retrieve_auth_data(self):
         """
         :return: [ num of registration, num of login ]
         """
-        reg, login = self._get_all_auth_data(self._get_corresponding_log_files())
+        reg, login = self._get_all_auth_data(self.current_log)
+        reg.user = reg.user.apply(self.parse_auth)
+        login.user = login.user.apply(self.parse_auth)
 
-        return len(reg[reg.date == self.processing_date].user), \
+        return len(reg[reg.date == self.processing_date].user.unique()), \
                len(login[login.date == self.processing_date].user.unique())
 
     def retrieve_recharging_data(self):
@@ -227,7 +257,8 @@ class StatisticsProcessor(object):
 
     def retrieve_compere_data(self):
         """
-        :return: [ new compere, active compere, total_compere so far ]
+        :return: [ new compere, active compere, total_compere so far, normal, paid,
+                    interactive live show, cheating dice, Q&A ]
         """
         # new compere
         self.cur.execute("SELECT COUNT(*) FROM "
@@ -244,6 +275,27 @@ class StatisticsProcessor(object):
         self.cur.execute("SELECT COUNT(DISTINCT rid) FROM live_histories "
                          "WHERE date_trunc('day', start_time) <= %s", (self.processing_date,))
         result += self.cur.fetchone()
+
+        # total live show, normal, paid
+        self.cur.execute("SELECT COUNT(*) FROM live_histories WHERE date_trunc('day', start_time) = %s GROUP BY type ORDER BY type", (self.processing_date,))
+        r = self.cur.fetchall()
+        normal = r[0][0]
+        paid = r[1][0]
+        result += (normal, paid)
+
+        # number of interactive live show
+        self.cur.execute("SELECT COUNT(*) FROM live_histories WHERE start_time IN "
+                         "(SELECT start_time FROM live_histories lh INNER JOIN game_bonus_stats gs "
+                         "ON lh.rid = gs.room_id AND gs.game_start >= lh.start_time "
+                         "AND gs.game_end <= lh.close_time WHERE date_trunc('day', start_time) = %s "
+                         "GROUP BY start_time)", (self.processing_date,))
+        result += self.cur.fetchone()
+
+        # number of cheating dice and Q&A
+        self.cur.execute("SELECT game_id, COUNT(*) FROM game_bonus_stats WHERE date_trunc('day', game_start) = %s and game_id IS NOT NULL GROUP BY game_id", (self.processing_date,))
+        r = {}
+        r.update(reduce(lambda x, y: x.update({y[0]: y[1]}) or x, self.cur.fetchall(), {}))
+        result += (r.get(1, 0), r.get(2, 0))
 
         return result
 
@@ -270,20 +322,20 @@ class StatisticsProcessor(object):
         self.cur.connection.commit()
 
     def run(self):
-        """
-        :param on_conflict: if Ture, will update rows if conflict occurs
-        """
         ts = int(time.mktime(self.processing_date.timetuple()))
         retrieved_values = self.retrieve_data()
         values = (ts, datetime.now(), self.processing_date) + retrieved_values
         insert_str = ','.join(["%s"]*len(values)).join(['(', ')'])
-        query = "INSERT INTO daily_statistics VALUES " + insert_str
+        query = "INSERT INTO daily_statistics (id, update_time, processing_date, new_compere, active_compere, " \
+                "total_compere, normal_show, paid_show, interactive_show, cheating_dice, qna, recipient, presenter, " \
+                "vcy_received, vfc_received, user_registered, uesr_logined, user_recharged, recharged_amount) " \
+                "VALUES " + insert_str
 
         conflict_str = " ON CONFLICT (id) DO UPDATE SET " \
-                       "(id, update_time, processing_date, new_compere, " \
-                       "active_compere, total_compere, recipient, " \
-                       "presenter, vcy_received, vfc_received, user_registered, " \
-                       "uesr_logined, user_recharged, recharged_amount) = " + insert_str
+                       "(id, update_time, processing_date, new_compere, active_compere, total_compere, " \
+                       "normal_show, paid_show, interactive_show, cheating_dice, qna, recipient, presenter, " \
+                       "vcy_received, vfc_received, user_registered, uesr_logined, " \
+                       "user_recharged, recharged_amount) = " + insert_str
         query += conflict_str
         values = values*2
 
