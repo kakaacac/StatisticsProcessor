@@ -277,10 +277,10 @@ class StatisticsProcessor(object):
         result += self.cur.fetchone()
 
         # total live show, normal, paid
-        self.cur.execute("SELECT COUNT(*) FROM live_histories WHERE date_trunc('day', start_time) = %s GROUP BY type ORDER BY type", (self.processing_date,))
-        r = self.cur.fetchall()
-        normal = r[0][0]
-        paid = r[1][0]
+        self.cur.execute("SELECT type, COUNT(*) FROM live_histories WHERE date_trunc('day', start_time) = %s GROUP BY type ORDER BY type", (self.processing_date,))
+        r = reduce(lambda x, y: x.update({y[0]:y[1]}) or x, self.cur.fetchall(), {})
+        normal = r.get("live", 0)
+        paid = r.get("paid", 0)
         result += (normal, paid)
 
         # number of interactive live show
