@@ -209,6 +209,8 @@ class StatisticsProcessor(object):
 
     @staticmethod
     def parse_auth(auth):
+        if len(auth) <= 37:
+            return ""
         if "." in auth:
             identity = auth.split(".")[1]
         else:
@@ -299,11 +301,25 @@ class StatisticsProcessor(object):
 
         return result
 
+    def retrieve_DAU_data(self):
+        df = self._get_df(self.current_log)
+        df.user = df.user.apply(self.parse_auth)
+        users = df[(df.date == self.processing_date) & (df.user != '')].user.unique()
+        return (len(users), )
+
+    def retrieve_total_user(self):
+        self.cur.execute("SELECT COUNT(*) FROM users u INNER JOIN device d ON u.active_device=d.did "
+                         "WHERE device_info->>'app_id' NOT IN ('tv.hubao.robot.android', 'tv.hubao.robot.ios')")
+        result = self.cur.fetchone()
+        return result
+
     def retrieve_data(self):
         return self.retrieve_compere_data() + \
                self.retrieve_props_giving_data() + \
                self.retrieve_auth_data() + \
-               self.retrieve_recharging_data()
+               self.retrieve_recharging_data() + \
+               self.retrieve_total_user() + \
+               self.retrieve_DAU_data()
 
     def summarize(self):
         now = datetime.now()
@@ -328,14 +344,14 @@ class StatisticsProcessor(object):
         insert_str = ','.join(["%s"]*len(values)).join(['(', ')'])
         query = "INSERT INTO daily_statistics (id, update_time, processing_date, new_compere, active_compere, " \
                 "total_compere, normal_show, paid_show, interactive_show, cheating_dice, qna, recipient, presenter, " \
-                "vcy_received, vfc_received, user_registered, uesr_logined, user_recharged, recharged_amount) " \
-                "VALUES " + insert_str
+                "vcy_received, vfc_received, user_registered, uesr_logined, user_recharged, recharged_amount, " \
+                "total_user, \"DAU\") VALUES " + insert_str
 
         conflict_str = " ON CONFLICT (id) DO UPDATE SET " \
                        "(id, update_time, processing_date, new_compere, active_compere, total_compere, " \
                        "normal_show, paid_show, interactive_show, cheating_dice, qna, recipient, presenter, " \
                        "vcy_received, vfc_received, user_registered, uesr_logined, " \
-                       "user_recharged, recharged_amount) = " + insert_str
+                       "user_recharged, recharged_amount, total_user, \"DAU\") = " + insert_str
         query += conflict_str
         values = values*2
 
@@ -371,6 +387,8 @@ if __name__ == '__main__':
     # print sp.retrieve_compere_data()
     # print sp.retrieve_auth_data()
     # print sp.retrieve_data()
+    # print sp.retrieve_total_user()
+    # print sp.retrieve_DAU_data()
 
     if len(sys.argv) > 1:
         if sys.argv[1] in ['summarize', 's']:
