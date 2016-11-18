@@ -345,13 +345,13 @@ class StatisticsProcessor(object):
         query = "INSERT INTO daily_statistics (id, update_time, processing_date, new_compere, active_compere, " \
                 "total_compere, normal_show, paid_show, interactive_show, cheating_dice, qna, recipient, presenter, " \
                 "vcy_received, vfc_received, user_registered, uesr_logined, user_recharged, recharged_amount, " \
-                "total_user, \"DAU\") VALUES " + insert_str
+                "total_user, dau) VALUES " + insert_str
 
         conflict_str = " ON CONFLICT (id) DO UPDATE SET " \
                        "(id, update_time, processing_date, new_compere, active_compere, total_compere, " \
                        "normal_show, paid_show, interactive_show, cheating_dice, qna, recipient, presenter, " \
                        "vcy_received, vfc_received, user_registered, uesr_logined, " \
-                       "user_recharged, recharged_amount, total_user, \"DAU\") = " + insert_str
+                       "user_recharged, recharged_amount, total_user, dau) = " + insert_str
         query += conflict_str
         values = values*2
 
