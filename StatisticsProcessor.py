@@ -96,6 +96,7 @@ class StatisticsProcessor(object):
 
         return df
 
+    # Deprecated
     def _get_all_auth_data(self, log_files):
         """
         :return: two Dataframes containing all log records of registration and login, respectively
@@ -217,16 +218,22 @@ class StatisticsProcessor(object):
             identity = auth.rsplit("-", 1)[1]
         return identity
 
-    def retrieve_auth_data(self):
+    def retrieve_login_user(self):
         """
-        :return: [ num of registration, num of login ]
+        :return: [ num of login device ]
         """
-        reg, login = self._get_all_auth_data(self.current_log)
-        reg.user = reg.user.apply(self.parse_auth)
+        login = self._get_df(self.current_log, request="POST /v1/passport/login")
         login.user = login.user.apply(self.parse_auth)
 
-        return len(reg[reg.date == self.processing_date].user.unique()), \
-               len(login[login.date == self.processing_date].user.unique())
+        return (len(login[login.date == self.processing_date].user.unique()), )
+
+    def retrieve_reg_user(self):
+        """
+        :return: [ num of registration ]
+        """
+        self.cur.execute("SELECT COUNT(*) FROM users WHERE date_trunc('day', to_timestamp(created))=%s",
+                         (self.processing_date,))
+        return self.cur.fetchone()
 
     def retrieve_recharging_data(self):
         """
@@ -279,7 +286,8 @@ class StatisticsProcessor(object):
         result += self.cur.fetchone()
 
         # total live show, normal, paid
-        self.cur.execute("SELECT type, COUNT(*) FROM live_histories WHERE date_trunc('day', start_time) = %s GROUP BY type ORDER BY type", (self.processing_date,))
+        self.cur.execute("SELECT type, COUNT(*) FROM live_histories WHERE date_trunc('day', start_time) = %s "
+                         "GROUP BY type ORDER BY type", (self.processing_date,))
         r = reduce(lambda x, y: x.update({y[0]:y[1]}) or x, self.cur.fetchall(), {})
         normal = r.get("live", 0)
         paid = r.get("paid", 0)
@@ -294,7 +302,9 @@ class StatisticsProcessor(object):
         result += self.cur.fetchone()
 
         # number of cheating dice and Q&A
-        self.cur.execute("SELECT game_id, COUNT(*) FROM game_bonus_stats WHERE date_trunc('day', game_start) = %s and game_id IS NOT NULL GROUP BY game_id", (self.processing_date,))
+        self.cur.execute("SELECT game_id, COUNT(*) FROM game_bonus_stats "
+                         "WHERE date_trunc('day', game_start) = %s and game_id IS NOT NULL "
+                         "GROUP BY game_id", (self.processing_date,))
 
         r = reduce(lambda x, y: x.update({y[0]: y[1]}) or x, self.cur.fetchall(), {})
         result += (r.get(1, 0), r.get(2, 0))
@@ -302,7 +312,7 @@ class StatisticsProcessor(object):
         return result
 
     def retrieve_DAU_data(self):
-        df = self._get_df(self.current_log)
+        df = self._get_df(self.current_log, request="POST /v1/passport/reg_device")
         df.user = df.user.apply(self.parse_auth)
         users = df[(df.date == self.processing_date) & (df.user != '')].user.unique()
         return (len(users), )
@@ -316,7 +326,8 @@ class StatisticsProcessor(object):
     def retrieve_data(self):
         return self.retrieve_compere_data() + \
                self.retrieve_props_giving_data() + \
-               self.retrieve_auth_data() + \
+               self.retrieve_reg_user() + \
+               self.retrieve_login_user() + \
                self.retrieve_recharging_data() + \
                self.retrieve_total_user() + \
                self.retrieve_DAU_data()
@@ -385,7 +396,8 @@ if __name__ == '__main__':
     # print sp.retrieve_props_giving_data()
     # print sp.retrieve_recharging_data()
     # print sp.retrieve_compere_data()
-    # print sp.retrieve_auth_data()
+    # print sp.retrieve_reg_user()
+    # print sp.retrieve_login_user()
     # print sp.retrieve_data()
     # print sp.retrieve_total_user()
     # print sp.retrieve_DAU_data()
