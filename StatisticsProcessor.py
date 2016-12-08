@@ -8,6 +8,7 @@ import sys
 import gzip
 from datetime import datetime, timedelta
 import pandas
+import numpy
 from functools import wraps
 
 from pg_pool import PostgresPool
@@ -65,7 +66,8 @@ class StatisticsProcessor(object):
                                quotechar='"',
                                names=["ip_addr", "bar", "user", "time", "timezone", "request", "status",
                                       "body_size", "http_referrer", "user_agent", "forwarded"],
-                               index_col=False)
+                               index_col=False,
+                               dtype={"status": numpy.object_})
 
     def _get_df(self, log_files, request=None, regex=False):
         if self._df is not None and self._logs == log_files:
@@ -85,11 +87,11 @@ class StatisticsProcessor(object):
             if regex:
                 r = request if request.startswith("^") else "^{}".format(request)
                 regex_filter = lambda df, request: df[(df.request.str.contains(request).fillna(False))
-                                                      & (df.status==200)].loc[:, ['time', 'user', 'date']]
+                                                      & (df.status=='200')].loc[:, ['time', 'user', 'date']]
                 df = regex_filter(temp_df, r)
             else:
                 str_filter = lambda df, request: df[(df.request.str.startswith(request).fillna(False))
-                                                    & (df.status==200)].loc[:, ['time', 'user', 'date']]
+                                                    & (df.status=='200')].loc[:, ['time', 'user', 'date']]
                 df = str_filter(temp_df, request)
         else:
             df = temp_df
